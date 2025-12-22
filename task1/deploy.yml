@@ -1,0 +1,224 @@
+---
+- name: Clean up existing Hadoop installation
+  hosts: hadoop
+  become: yes
+  gather_facts: no
+  tasks:
+    - name: Stop all Hadoop services
+      shell: |
+        if [ -f /home/hadoop/hadoop/bin/hdfs ]; then
+          /home/hadoop/hadoop/bin/hdfs --daemon stop datanode 2>/dev/null || true
+          /home/hadoop/hadoop/bin/hdfs --daemon stop namenode 2>/dev/null || true
+          /home/hadoop/hadoop/bin/hdfs --daemon stop secondarynamenode 2>/dev/null || true
+          sleep 2
+        fi
+      become_user: hadoop
+      ignore_errors: yes
+      changed_when: false
+
+    - name: Remove HDFS data directories
+      file:
+        path: /home/hadoop/hadoop_data
+        state: absent
+      ignore_errors: yes
+
+    - name: Remove Hadoop installation
+      file:
+        path: /home/hadoop/hadoop
+        state: absent
+      ignore_errors: yes
+
+- name: Prepare system
+  hosts: hadoop
+  become: yes
+  tasks:
+    - name: Create hadoop user
+      user:
+        name: hadoop
+        shell: /bin/bash
+        create_home: yes
+        state: present
+
+    - name: Create .ssh directory
+      file:
+        path: /home/hadoop/.ssh
+        state: directory
+        owner: hadoop
+        group: hadoop
+        mode: '0700'
+
+    - name: Update /etc/hosts
+      template:
+        src: templates/hosts.j2
+        dest: /etc/hosts
+        mode: '0644'
+
+- name: SSH key configuration
+  hosts: hadoop
+  become: yes
+  tasks:
+    - name: Generate SSH key on NameNode
+      openssh_keypair:
+        path: /home/hadoop/.ssh/id_rsa
+        owner: hadoop
+        group: hadoop
+        type: rsa
+        size: 2048
+      when: inventory_hostname == 'team-22-nn'
+
+    - name: Copy public key from NameNode to all nodes
+      authorized_key:
+        user: hadoop
+        key: "{{ lookup('file', '/home/hadoop/.ssh/id_rsa.pub') }}"
+        state: present
+      when: inventory_hostname != 'team-22-nn'
+      delegate_to: team-22-nn
+      run_once: yes
+
+- name: Download and install Hadoop
+  hosts: hadoop
+  become: yes
+  tasks:
+    - name: Download Hadoop 3.3.6
+      get_url:
+        url: https://archive.apache.org/dist/hadoop/common/hadoop-3.3.6/hadoop-3.3.6.tar.gz
+        dest: /tmp/hadoop-3.3.6.tar.gz
+        mode: '0644'
+      async: 300
+      poll: 10
+
+    - name: Extract Hadoop
+      unarchive:
+        src: /tmp/hadoop-3.3.6.tar.gz
+        dest: /home/hadoop/
+        remote_src: yes
+        owner: hadoop
+        group: hadoop
+
+    - name: Create Hadoop symlink
+      file:
+        src: /home/hadoop/hadoop-3.3.6
+        dest: /home/hadoop/hadoop
+        state: link
+        owner: hadoop
+        group: hadoop
+
+- name: Configure Hadoop
+  hosts: hadoop
+  become: yes
+  tasks:
+    - name: Set JAVA_HOME in hadoop-env.sh
+      lineinfile:
+        path: /home/hadoop/hadoop/etc/hadoop/hadoop-env.sh
+        regexp: '^export JAVA_HOME='
+        line: 'export JAVA_HOME=/usr/lib/jvm/java-11-openjdk-amd64'
+        state: present
+
+    - name: Create data directories
+      file:
+        path: "{{ item }}"
+        state: directory
+        owner: hadoop
+        group: hadoop
+        mode: '0755'
+      loop:
+        - /home/hadoop/hadoop_data/namenode
+        - /home/hadoop/hadoop_data/datanode
+
+    - name: Deploy core-site.xml
+      template:
+        src: templates/core-site.xml.j2
+        dest: /home/hadoop/hadoop/etc/hadoop/core-site.xml
+        owner: hadoop
+        group: hadoop
+        mode: '0644'
+
+    - name: Deploy hdfs-site.xml
+      template:
+        src: templates/hdfs-site.xml.j2
+        dest: /home/hadoop/hadoop/etc/hadoop/hdfs-site.xml
+        owner: hadoop
+        group: hadoop
+        mode: '0644'
+
+    - name: Create workers file
+      copy:
+        content: |
+          team-22-nn
+          team-22-dn-00
+          team-22-dn-01
+        dest: /home/hadoop/hadoop/etc/hadoop/workers
+        owner: hadoop
+        group: hadoop
+        mode: '0644'
+
+    - name: Set environment variables in .bashrc
+      blockinfile:
+        path: /home/hadoop/.bashrc
+        block: |
+          export HADOOP_HOME=/home/hadoop/hadoop
+          export PATH=$PATH:$HADOOP_HOME/bin:$HADOOP_HOME/sbin
+          export JAVA_HOME=/usr/lib/jvm/java-11-openjdk-amd64
+        marker: "# {mark} HADOOP ENVIRONMENT"
+        create: yes
+        owner: hadoop
+        group: hadoop
+
+- name: Start HDFS services
+  hosts: hadoop
+  become: yes
+  tasks:
+    - name: Format NameNode (only on nn)
+      shell: |
+        source /home/hadoop/.bashrc
+        /home/hadoop/hadoop/bin/hdfs namenode -format -force -nonInteractive
+      become_user: hadoop
+      when: inventory_hostname == 'team-22-nn'
+
+    - name: Start NameNode (only on nn)
+      shell: |
+        source /home/hadoop/.bashrc
+        /home/hadoop/hadoop/bin/hdfs --daemon start namenode
+      become_user: hadoop
+      when: inventory_hostname == 'team-22-nn'
+
+    - name: Start Secondary NameNode (only on nn)
+      shell: |
+        source /home/hadoop/.bashrc
+        /home/hadoop/hadoop/bin/hdfs --daemon start secondarynamenode
+      become_user: hadoop
+      when: inventory_hostname == 'team-22-nn'
+
+    - name: Start DataNodes (on all nodes in workers file)
+      shell: |
+        source /home/hadoop/.bashrc
+        /home/hadoop/hadoop/bin/hdfs --daemon start datanode
+      become_user: hadoop
+      when: inventory_hostname in groups['datanodes']
+
+- name: Verify cluster
+  hosts: namenodes
+  become: yes
+  tasks:
+    - name: Wait for DataNodes to register
+      pause:
+        seconds: 20
+
+    - name: Check HDFS cluster status
+      shell: |
+        source /home/hadoop/.bashrc
+        /home/hadoop/hadoop/bin/hdfs dfsadmin -report
+      become_user: hadoop
+      register: hdfs_report
+
+    - name: Display cluster report
+      debug:
+        msg: "{{ hdfs_report.stdout_lines }}"
+
+    - name: Check running Java processes
+      shell: sudo -u hadoop jps
+      register: jps_output
+
+    - name: Display Java processes
+      debug:
+        msg: "{{ jps_output.stdout_lines }}"
