@@ -1,0 +1,53 @@
+---
+- name: Reset Hadoop/YARN cluster
+  hosts: hadoop
+  become: yes
+  gather_facts: no
+  tasks:
+    - name: Stop all Hadoop/YARN services
+      shell: |
+        if [ -f /home/hadoop/hadoop/bin/hdfs ]; then
+          # Stop HDFS services
+          /home/hadoop/hadoop/bin/hdfs --daemon stop datanode 2>/dev/null || true
+          /home/hadoop/hadoop/bin/hdfs --daemon stop namenode 2>/dev/null || true
+          /home/hadoop/hadoop/bin/hdfs --daemon stop secondarynamenode 2>/dev/null || true
+          
+          # Stop YARN services
+          /home/hadoop/hadoop/bin/yarn --daemon stop resourcemanager 2>/dev/null || true
+          /home/hadoop/hadoop/bin/yarn --daemon stop nodemanager 2>/dev/null || true
+          sleep 2
+        fi
+      become_user: hadoop
+      ignore_errors: yes
+      changed_when: false
+
+    - name: Kill remaining Java processes
+      shell: |
+        pkill -u hadoop -f "java.*hadoop" 2>/dev/null || true
+        sleep 1
+      ignore_errors: yes
+
+    - name: Remove HDFS data directories
+      file:
+        path: /home/hadoop/hadoop_data
+        state: absent
+      ignore_errors: yes
+
+    - name: Remove YARN data directories
+      file:
+        path: /home/hadoop/hadoop_data/yarn
+        state: absent
+      when: false  # Пока не используется, на будущее
+      ignore_errors: yes
+
+    - name: Remove Hadoop logs
+      file:
+        path: /home/hadoop/hadoop/logs
+        state: absent
+      ignore_errors: yes
+
+    - name: Remove Hadoop symlink (keeping installation)
+      file:
+        path: /home/hadoop/hadoop
+        state: absent
+      ignore_errors: yes
