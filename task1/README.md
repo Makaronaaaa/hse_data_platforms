@@ -6,10 +6,20 @@
 
 ## Инструкция по использованию
 
-1. Установите Ansible на своей машине:
+1. Предварительные требования
+
+На вашей машине должны быть установлены:
+
+Для Linux
 ```bash
 sudo apt update
 sudo apt install -y ansible sshpass
+```
+
+Для macOS
+```bash
+brew install ansible
+brew install hudochenkov/sshpass/sshpass
 ```
 
 2. Клонируйте репозиторий и перейдите в нужную папку:
