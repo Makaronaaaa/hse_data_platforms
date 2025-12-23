@@ -1,0 +1,41 @@
+---
+- name: Reset Hadoop cluster
+  hosts: hadoop
+  become: yes
+  gather_facts: no
+  tasks:
+    - name: Stop all Hadoop services
+      shell: |
+        if [ -f /home/hadoop/hadoop/bin/hdfs ]; then
+          /home/hadoop/hadoop/bin/hdfs --daemon stop datanode 2>/dev/null || true
+          /home/hadoop/hadoop/bin/hdfs --daemon stop namenode 2>/dev/null || true
+          /home/hadoop/hadoop/bin/hdfs --daemon stop secondarynamenode 2>/dev/null || true
+          sleep 2
+        fi
+      become_user: hadoop
+      ignore_errors: yes
+      changed_when: false
+
+    - name: Remove HDFS data directories
+      file:
+        path: /home/hadoop/hadoop_data
+        state: absent
+      ignore_errors: yes
+
+    - name: Remove Hadoop installation
+      file:
+        path: /home/hadoop/hadoop
+        state: absent
+      ignore_errors: yes
+
+    - name: Remove Hadoop logs
+      file:
+        path: /home/hadoop/hadoop/logs
+        state: absent
+      ignore_errors: yes
+
+    - name: Remove Hadoop symlink
+      file:
+        path: /home/hadoop/hadoop
+        state: absent
+      ignore_errors: yes
